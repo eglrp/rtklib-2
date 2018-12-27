@@ -12,6 +12,8 @@
 
 # Build results
 [Dd]ebug/
+[Pp]lot/
+result/
 [Dd]ebugPublic/
 [Rr]elease/
 [Rr]eleases/
