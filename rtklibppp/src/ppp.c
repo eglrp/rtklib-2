@@ -68,15 +68,19 @@ static const char rcsid[]="$Id:$";
 #define MIN(x,y)    ((x)<(y)?(x):(y))
 #define ROUND(x)    (int)floor((x)+0.5)
 
-#define MAX_ITER    5               /* max number of iterations */
+#define MAX_ITER    8               /* max number of iterations */
 #define MAX_STD_FIX 0.15            /* max std-dev (3d) to fix solution */
 #define MIN_NSAT_SOL 4              /* min satellite number for solution */
 #define THRES_REJECT 3.0            /* reject threshold of posfit-res (sigma) */
+#define THRES_REJECT_K0 1.5            /* reject threshold of posfit-res (sigma) */
+#define THRES_REJECT_K1 3.0           /* reject threshold of posfit-res (sigma) */
 
 //#define THRES_MW_JUMP 10.0
 #define THRES_MW_JUMP 2.5
 #define THRES_GF_JUMP 0.05
-#define VAR_POS     SQR(60.0)       /* init variance receiver position (m^2) */
+#define VAR_POS     SQR(10.0)       /* init variance receiver position (m^2) */
+#define VAR_VEL     SQR(10.0)       /* init variance receiver position (m^2) */
+#define VAR_ACC     SQR(10.0)       /* init variance receiver position (m^2) */
 #define VAR_CLK     SQR(60.0)       /* init variance receiver clock (m^2) */
 #define VAR_ZTD     SQR( 0.6)       /* init variance ztd (m^2) */
 #define VAR_GRA     SQR(0.01)       /* init variance gradient (m^2) */
@@ -850,35 +854,73 @@ static void detslp_gf(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 }
 	
 
-
 /* temporal update of position -----------------------------------------------*/
 static void udpos_ppp(rtk_t *rtk)
 {
-    int i;
-    
-    trace(3,"udpos_ppp:\n");
-    
-    /* fixed mode */
-    if (rtk->opt.mode==PMODE_PPP_FIXED) {
-        for (i=0;i<3;i++) initx(rtk,rtk->opt.ru[i],1E-8,i);
-        return;
-    }
-    /* initialize position for first epoch */
-    if (norm(rtk->x,3)<=0.0) {
-        for (i=0;i<3;i++) 
-			initx(rtk,rtk->sol.rr[i],VAR_POS,i);
-    }
-    /* static ppp mode */
-    if (rtk->opt.mode==PMODE_PPP_STATIC) {
-        for (i=0;i<3;i++) {
-            rtk->P[i*(1+rtk->nx)]+=SQR(rtk->opt.prn[5])*fabs(rtk->tt);
-        }
-        return;
-    }
-    /* kinmatic mode without dynamics */
-    for (i=0;i<3;i++) {
-        initx(rtk,rtk->sol.rr[i],VAR_POS,i);
-    }
+	double *F, *P, *FP, *x, *xp, pos[3], Q[9] = { 0 }, Qv[9], var = 0.0;
+	int i, j, *ix, nx;
+
+	/* fixed mode */
+	if (rtk->opt.mode == PMODE_PPP_FIXED) {
+		for (i = 0; i<3; i++) initx(rtk, rtk->opt.ru[i], 1E-8, i);
+		return;
+	}
+	/* initialize position for first epoch */
+	if (norm(rtk->x, 3) <= 0.0) {
+		for (i = 0; i<3; i++) initx(rtk, rtk->sol.rr[i], VAR_POS, i);
+		if (rtk->opt.dynamics) {
+			for (i = 3; i<6; i++) initx(rtk, rtk->sol.rr[i], VAR_VEL, i);
+			for (i = 6; i<9; i++) initx(rtk, 1E-6, VAR_ACC, i);
+		}
+	}
+	//for (i = 0; i < 9; i++) printf("%lf\n", rtk->x[i]);
+	/* static ppp mode */
+	if (rtk->opt.mode == PMODE_PPP_STATIC) {
+		for (i = 0; i<3; i++) {
+			rtk->P[i*(1 + rtk->nx)] += SQR(rtk->opt.prn[5])*fabs(rtk->tt);
+		}
+		return;
+	}
+	/* kinmatic mode without dynamics */
+	if (!rtk->opt.dynamics) {
+		for (i = 0; i<3; i++) {
+			initx(rtk, rtk->sol.rr[i], VAR_POS, i);
+		}
+		return;
+	}
+	for (i = 0; i<3; i++)
+		var += rtk->P[i + i * rtk->nx];
+	var /= 3.0;
+	if (var>VAR_POS) {
+		/* reset position with large variance */
+		for (i = 0; i<3; i++) initx(rtk, rtk->sol.rr[i], VAR_POS, i);
+		for (i = 3; i<6; i++) initx(rtk, rtk->sol.rr[i], VAR_VEL, i);
+		for (i = 6; i<9; i++) initx(rtk, 1E-6, VAR_ACC, i);
+		return;
+	}
+	/* state transition of position/velocity/acceleration */
+	F = eye(rtk->nx); FP = mat(rtk->nx, rtk->nx); xp = mat(rtk->nx, 1);
+
+	for (i = 0; i<6; i++) {
+		F[i + (i + 3)*rtk->nx] = rtk->tt;
+	}
+	for (i = 0; i<3; i++) {
+		F[i + (i + 6)*rtk->nx] = SQR(rtk->tt) / 2.0;
+	}
+	/* x=F*x, P=F*P*F+Q */
+	matmul("NN", rtk->nx, 1, rtk->nx, 1.0, F, rtk->x, 0.0, xp);
+	matcpy(rtk->x, xp, rtk->nx, 1);
+	matmul("NN", rtk->nx, rtk->nx, rtk->nx, 1.0, F, rtk->P, 0.0, FP);
+	matmul("NT", rtk->nx, rtk->nx, rtk->nx, 1.0, FP, F, 0.0, rtk->P);
+
+	/* process noise added to only acceleration */
+	Q[0] = Q[4] = SQR(rtk->opt.prn[3]); Q[8] = SQR(rtk->opt.prn[4]);
+	ecef2pos(rtk->x, pos);
+	covecef(pos, Q, Qv);
+	for (i = 0; i<3; i++)
+		for (j = 0; j<3; j++)
+			rtk->P[i + 6 + (j + 6)*rtk->nx] += Qv[i + j * 3];
+	free(F); free(FP); free(xp);
 }
 /* temporal update of clock --------------------------------------------------*/
 static void udclk_ppp(rtk_t *rtk)
@@ -1278,32 +1320,24 @@ static int model_iono(gtime_t time, const double *pos, const double *azel,
 /* phase and code residuals --------------------------------------------------*/
 static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
 	const double *dts, const double *var_rs, const int *svh,
-	const double *dr, int *exc, const nav_t *nav,
-	double *x,double *Pp, rtk_t *rtk, double *v, double *H, double *R,
-	double *azel)
+	const double *dr, int *exc, const nav_t *nav,double *x,
+	double *Pp, rtk_t *rtk, double *v, double *H, double *R,
+	double *azel,int *robust,double *StandRes,double *var)
 {
 	const double *lam;
 	prcopt_t *opt = &rtk->opt;
 	double y, r, cdtr, bias, C, rr[3], pos[3], e[3], dtdx[3], L[NFREQ], P[NFREQ], Lc, Pc;
-	double var[MAXOBS * 2], dtrp = 0.0, dion = 0.0, vart = 0.0, vari = 0.0, dcb;
+	double dtrp = 0.0, dion = 0.0, vart = 0.0, vari = 0.0, dcb;
 	double dantr[NFREQ] = { 0 }, dants[NFREQ] = { 0 };
 	double ve[MAXOBS * 2 * NFREQ] = { 0 }, vmax = 0, gravitationalDelayModel, shd = 0.0;
 	char str[32];
 	int ne = 0, obsi[MAXOBS * 2 * NFREQ] = { 0 }, frqi[MAXOBS * 2 * NFREQ], maxobs, maxfrq, rej;
 	int i, j, k, sat, sys, nv = 0, nx = rtk->nx, stat = 1;
-	double *v2 = mat(n*2, 1);
 	time2str(obs[0].time, str, 2);
-
 	for (i = 0; i<MAXSAT; i++) for (j = 0; j<opt->nf; j++) rtk->ssat[i].vsat[j] = 0;
-
 	for (i = 0; i<3; i++) rr[i] = x[i] + dr[i];
 	ecef2pos(rr, pos);
-	int sow, week;
-	int tss;
 	int jj = 0;
-	sow = time2gpst(obs[0].time, &week);
-	if (sow == 351912)
-		tss = 1;
 	for (i = 0; i<n&&i<MAXOBS; i++) {
 		sat = obs[i].sat;
 		lam = nav->lam[sat - 1];
@@ -1468,15 +1502,18 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
 			}
 			/* residual */
 			v[nv] = y - (r + cdtr - CLIGHT * dts[i * 2] + dtrp + C * dion + dcb + bias - gravitationalDelayModel);
-			v2[nv] = v[nv];
 			if (j % 2 == 0) rtk->ssat[sat - 1].resc[j / 2] = v[nv];
 			else        rtk->ssat[sat - 1].resp[j / 2] = v[nv];
-
+			//------------------------20190105---------------------------------------
 			/* variance */
-			var[nv] = varerr(obs[i].sat, sys, azel[1 + i * 2], j / 2, j % 2, opt) +vart + SQR(C)*vari + var_rs[i];
+			if (post == 0 && (robust[i] != sat)) {
+				/* variance */
+				var[nv] = varerr(obs[i].sat, sys, azel[1 + i * 2], j / 2, j % 2, opt) + vart + SQR(C)*vari + var_rs[i];
+				if (sys == SYS_GLO && j % 2 == 1) var[nv] += VAR_GLO_IFB;
+			}
+			// ------------------------20190105-------------------------------------- -
 			if (sys == SYS_GLO && j % 2 == 1) var[nv] += VAR_GLO_IFB;
 			 
-		//	double test = v[nv] / sqrt(var[nv]);
 			trace(4, "%s sat=%2d %s%d res=%9.4f sig=%9.4f el=%4.1f\n", str, sat,
 				j % 2 ? "P" : "L", j / 2 + 1, v[nv], sqrt(var[nv]), azel[1 + i * 2] * R2D);
 
@@ -1485,8 +1522,6 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
 				if (outFp[OFILE_DEBUG])
 				fprintf(outFp[OFILE_DEBUG], "outlier (%d) rejected %s sat=%2d %s%d res=%9.4f el=%4.1f\n",
 					post, str, sat, j % 2 ? "P" : "L", j / 2 + 1, v[nv], azel[1 + i * 2] * R2D);
-				//printf("outlier (%d) rejected %s sat=%2d %s%d res=%9.4f el=%4.1f\n",
-					//post, str, sat, j % 2 ? "P" : "L", j / 2 + 1, v[nv], azel[1 + i * 2] * R2D);
 				exc[i] = 1; rtk->ssat[sat - 1].rejc[j % 2]++;
 
 				jj = IB(sat, 0, &rtk->opt);
@@ -1495,9 +1530,14 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
 				continue;
 			}
 			/* record large post-fit residuals */
-			//if (post&&fabs(v[nv])>sqrt(var[nv])*THRES_REJECT) {
-			if (post && (fabs((v[nv])>sqrt(var[nv])*THRES_REJECT) || ((fabs(v[nv])>0.1) && j == 0))) {
-				obsi[ne] = i; frqi[ne] = j; ve[ne] = v[nv]; ne++;
+
+			if (post)
+			{
+				StandRes[nv] = fabs(v[nv]) / sqrt(var[nv]);
+				if (StandRes[nv] > THRES_REJECT_K0)
+				{
+					obsi[ne] = i; frqi[ne] = j; ve[ne] = StandRes[nv]; ne++;
+				}
 			}
 			if (j % 2 == 0) rtk->ssat[sat - 1].vsat[j / 2] = 1;
 			nv++;
@@ -1511,26 +1551,40 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
 			vmax = ve[j]; maxobs = obsi[j]; maxfrq = frqi[j]; rej = j;
 		}
 		sat = obs[maxobs].sat;
+		robust[maxobs] = sat;
 		if (outFp[OFILE_DEBUG])
-		fprintf(outFp[OFILE_DEBUG], "outlier (%d) rejected %s sat=%2d %s%d res=%9.4f el=%4.1f\n",
+		fprintf(outFp[OFILE_DEBUG], "outlier (%d) rejected %s sat=%2d %s%d StandRes=%9.4f el=%4.1f\n",
 			post, str, sat, maxfrq % 2 ? "P" : "L", maxfrq / 2 + 1, vmax, azel[1 + maxobs * 2] * R2D);
-	    printf( "outlier (%d) rejected %s sat=%2d %s%d res=%9.4f el=%4.1f\n",
+	    printf( "outlier (%d) rejected %s sat=%2d %s%d StandRes=%9.4f el=%4.1f\n",
 			post, str, sat, maxfrq % 2 ? "P" : "L", maxfrq / 2 + 1, vmax, azel[1 + maxobs * 2] * R2D);
-		exc[maxobs] = 1; rtk->ssat[sat - 1].rejc[maxfrq % 2]++; stat = 0;
+		rtk->ssat[sat - 1].rejc[maxfrq % 2]++; stat = 0;
 		ve[rej] = 0;
 	}
 
-	//for (i = 0; i < nv; i++)
-	//{
-	//	printf("v[%d]=%lf,var[%d]=%lf\n",i, v[i],i, var[i]);
-	//}
+	for (i = 0; i < nv; i++)
+	{
+		if (StandRes[i] == vmax)
+		{
+			if(StandRes[i]<= THRES_REJECT_K0)
+				var[i] = var[i];
+			else if (StandRes[i] > THRES_REJECT_K0 && StandRes[i] <= THRES_REJECT_K1)
+			{
+				double pp, pp_;
+				pp_ = 1 / sqrt(var[i]);
+				pp = pp_ * (THRES_REJECT_K0 / StandRes[i])*SQR(((THRES_REJECT_K1 - StandRes[i]) / (THRES_REJECT_K1 - THRES_REJECT_K0)));
+				var[i] = SQR((1 / pp));
+			}
+			else
+				var[i] = 10E8;
+		}
+	}
+
 
 	for (i = 0; i < nv; i++) for (j = 0; j < nv; j++) {
 
 		R[i + j * nv] = i == j ? var[i] : 0.0;
 	}
 	
-	free(v2); 
 	return post ? stat : nv;
 }
 /* number of estimated states ------------------------------------------------*/
@@ -1730,15 +1784,15 @@ static void update_stat(rtk_t *rtk, const obsd_t *obs, int n, int nv, int stat)
 extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 {
     const prcopt_t *opt=&rtk->opt;
-    double *rs,*dts,*var,*v,*H,*R,*azel,*xp,*Pp,dr[3]={0},std[3];
+    double *rs,*dts,*var,*v,*H,*R,*azel,*xp,*Pp,dr[3]={0},std[3],*StandRes;
     char str[32];
-    int i,j,nv,info,svh[MAXOBS],exc[MAXOBS]={0},stat=SOLQ_SINGLE;
+    int i,j,nv,info,svh[MAXOBS],exc[MAXOBS]={0},stat=SOLQ_SINGLE,robust[MAXOBS] = { 0 };
 	double stdd = 0.0;
 	double  sow,ep[6];
 	int week;
 	time2epoch(obs[0].time, ep);
 	sow = time2gpst(obs[0].time, &week);
-
+	double var_R[MAXOBS * 2];
     time2str(obs[0].time,str,2);
     trace(3,"pppos   : time=%s nx=%d n=%d\n",str,rtk->nx,n);
    
@@ -1764,6 +1818,7 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
     nv=n*rtk->opt.nf;
     xp=mat(rtk->nx,1); Pp=zeros(rtk->nx,rtk->nx);
     v=mat(nv,1); H=mat(rtk->nx,nv); R=mat(nv,nv);
+	StandRes = mat(nv, 1);
     for (i=0;i<MAX_ITER;i++) {
         
         matcpy(xp,rtk->x,rtk->nx,1);
@@ -1771,21 +1826,29 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 		//for (int kkk = 0; kkk < rtk->nx; kkk++)
 		//	printf("x[%d]=%lf\n", kkk, rtk->x[kkk]);
         /* prefit residuals */
-        if (!(nv=ppp_res(0,obs,n,rs,dts,var,svh,dr,exc,nav,xp, Pp,rtk,v,H,R,azel))) {
+        if (!(nv=ppp_res(0,obs,n,rs,dts,var,svh,dr,exc,nav,xp, Pp,rtk,v,H,R,azel, robust, StandRes,var_R))) {
             printf("%s ppp (%d) no valid obs data\n",str,i+1);
             break;
         }
 
-		if ((info = filter(xp, Pp, H, v, R, rtk->nx, nv))) {
+		if ((info = filter(xp, Pp, H, v, R, rtk->nx, nv,&stdd))) {
 			printf("%s ppp (%d) filter error info=%d\n", str, i + 1, info);
 			break;
 		}
 
-		if (ppp_res(i + 1, obs, n, rs, dts, var, svh, dr, exc, nav, xp, Pp, rtk, v, H, R, azel)) {
+		if (ppp_res(i + 1, obs, n, rs, dts, var, svh, dr, exc, nav, xp, Pp, rtk, v, H, R, azel,robust, StandRes,var_R)) {
 			matcpy(rtk->x, xp, rtk->nx, 1);
 			matcpy(rtk->P, Pp, rtk->nx, rtk->nx);
 			stat = SOLQ_PPP;
-			break;
+			if (stdd < 0.02)
+				break;
+			else
+				continue;
+		}
+		if (i == MAX_ITER - 1) {
+			matcpy(rtk->x, xp, rtk->nx, 1);
+			matcpy(rtk->P, Pp, rtk->nx, rtk->nx);
+			stat = SOLQ_PPP;
 		}
 
     }
@@ -1811,4 +1874,5 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 	}
 	free(rs); free(dts); free(var); free(azel);
 	free(xp); free(Pp); free(v); free(H); free(R);
+	free(StandRes);
 }

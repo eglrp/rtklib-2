@@ -81,7 +81,7 @@ extern int comb_j;
 #define OutputFileName "guet20180826"
 #define RECEIVE_RAW_LOG "raw20180826.log"
 #define ENTRIP_DATA2 "user:passwd@ntrip.gnsslab.cn:2101/IGS01"
-#define RAW_DATA_CLIENT "202.193.61.108:6003"
+#define RAW_OUTPUT "192.168.1.8:6003"
 
 
 #define rover_data "lvban1hao_171130.rtcm"
@@ -1234,7 +1234,7 @@ extern int  solve (const char *tr, const double *A, const double *Y, int n,
                    int m, double *X);
 extern int  lsq   (const double *A, const double *y, int n, int m, double *x,
                    double *Q);
-extern int filter(double *x, double *P, const double *H, const double *v, double *R, int n, int m);
+extern int filter(double *x, double *P, const double *H, const double *v, double *R, int n, int m,double *std);
 extern int  smoother(const double *xf, const double *Qf, const double *xb,
                      const double *Qb, int n, double *xs, double *Qs);
 extern void matprint (const double *A, int n, int m, int p, int q);

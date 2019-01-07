@@ -66,7 +66,7 @@ static int keepalive = 0;             /* keep alive flag */
 static int fswapmargin = 30;            /* file swap margin (s) */
 
 
-static char strpath[8][1024] = { rover_data,"",ENTRIP_DATA2,"","","","","" };
+static char strpath[8][1024] = { rover_data,"",ENTRIP_DATA2,"",RAW_OUTPUT,"","","" };
 /* stream paths */
 
 static int strfmt[] = {                   /* stream formats STRFMT_RNXCLK */
@@ -75,7 +75,7 @@ static int strfmt[] = {                   /* stream formats STRFMT_RNXCLK */
 gtime_t obs_time; gtime_t ssr_time;
 //STRFMT_RTCM3
 static int strtype[] = {     /* stream types */
-	STR_FILE,STR_NONE,STR_NTRIPCLI,STR_NONE,STR_NONE,STR_NONE,STR_NONE,STR_NONE
+	STR_FILE,STR_NONE,STR_NTRIPCLI,STR_NONE,STR_TCPSVR,STR_NONE,STR_NONE,STR_NONE
 	//STR_FILE,STR_NONE,STR_NTRIPCLI,STR_NONE,STR_FILE,STR_TCPSVR,STR_NONE,STR_NONE
 	//STR_TCPCLI
 };
@@ -169,7 +169,7 @@ static void *rtksvrthread(void *arg)
 			}
 			if (i == 0) {
 				strwrite(svr->stream + i + 4, p, n);
-				strwrite(svr->stream + i + 5, p, n);
+				//strwrite(svr->stream + i + 5, p, n);
 			}
 			svr->nb[i] += n;
 

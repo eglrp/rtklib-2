@@ -1138,7 +1138,7 @@ static int filter_(const double *x, const double *P, const double *H,
 }
 
 
-extern int filter(double *x, double *P, const double *H, const double *v, double *R, int n, int m)
+extern int filter(double *x, double *P, const double *H, const double *v, double *R, int n, int m, double *std)
 {
 	double *x_, *xp_, *P_, *Pp_, *H_;
 	int i, j, k, info, *ix,jj;
@@ -1158,7 +1158,12 @@ extern int filter(double *x, double *P, const double *H, const double *v, double
 
 	info = filter_(x_, P_, H_, v, R, k, m, xp_, Pp_);
 
+	for (jj = 0; jj < k; jj++)
+	{
+		sum_deltx = sum_deltx + fabs((xp_[jj] - x_[jj]));
 
+	}
+	*std = sum_deltx / k;
 	for (i = 0; i < k; i++) {
 		x[ix[i]] = xp_[i];
 		for (j = 0; j < k; j++) P[ix[i] + ix[j] * n] = Pp_[i + j * k];
